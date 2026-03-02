@@ -1,36 +1,42 @@
-"use server"
+/* eslint-disable @typescript-eslint/no-explicit-any */
+"use server";
 
-import { setCookie } from "@/lib/cookieUtils";
-import jwt, { JwtPayload } from "jsonwebtoken";
+import { httpClient } from "@/lib/axios/httpClient";
+import { setTokenInCookies } from "@/lib/tokenUtils";
+import { ApiErrorResponse } from "@/types/api.types";
+import { ILoginResponse } from "@/types/auth.types";
+import { ILoginPayload, loginZodSchema } from "@/zod/auth.validation";
+import { redirect } from "next/navigation";
 
-const JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET
+export const loginAction = async (payload : ILoginPayload ) : Promise<ILoginResponse | ApiErrorResponse> =>{
+    const parsedPayload = loginZodSchema.safeParse(payload);
 
-const getTokenSecondsRemaining =  (token: string): number => {
-    if(!token) return 0;
-
-    try {
-        const tokenPayload= JWT_ACCESS_SECRET ? jwt.verify(token, JWT_ACCESS_SECRET as string) as JwtPayload : jwt.decode(token) as JwtPayload;
-
-        if (tokenPayload && !tokenPayload.exp){
-            return 0;
+    if(!parsedPayload.success){
+        const firstError = parsedPayload.error.issues[0].message || "Invalid input";
+        return {
+            success: false,
+            message: firstError,
         }
-
-        const remainingSeconds = tokenPayload.exp as number - Math.floor(Date.now() / 1000)
-
-        return remainingSeconds > 0 ? remainingSeconds : 0;
-
-    } catch (error) {
-        console.error("Error decoding token:", error);
-        return 0;
     }
-} 
+    try {
 
-export const setTokenInCookies = async (
-    name : string,
-    token : string,
-    fallbackMaxAgeInSeconds = 60 * 60 * 24 // 1 days
-) => {
-    const maxAgeInSeconds = getTokenSecondsRemaining(token);
+        const response = await httpClient.post<ILoginResponse>("/auth/login", parsedPayload.data);
+        console.log(response.data);
 
-    await setCookie(name, token, maxAgeInSeconds || fallbackMaxAgeInSeconds);
+        const { accessToken, refreshToken, token} = response.data;
+        await setTokenInCookies("accessToken", accessToken);
+        await setTokenInCookies("refreshToken", refreshToken);
+        await setTokenInCookies("better-auth.session_token", token, 24 * 60 * 60); // 1 day in seconds
+
+        redirect("/dashboard");
+        
+    } catch (error : any) {
+    if(error && typeof error === "object" && "digest" in error && typeof error.digest === "string" && error.digest.startsWith("NEXT_REDIRECT")){
+        throw error;
+    }
+        return {
+            success: false,
+            message: `Login failed: ${error.message}`,
+        }
+    }
 }
